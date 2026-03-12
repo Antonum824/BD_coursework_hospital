@@ -1,0 +1,149 @@
+-- Больницы
+CREATE TABLE hospitals (
+    hospital_id SERIAL PRIMARY KEY,
+    name VARCHAR(200) NOT NULL,
+    address VARCHAR(200) NOT NULL,
+    phone VARCHAR(20) DEFAULT 'not specified',
+    inn VARCHAR(12) NOT NULL UNIQUE CHECK (inn ~ '^\d{10}$|^\d{12}$'),
+    UNIQUE(name)
+);
+
+-- Должности
+CREATE TABLE positions (
+    position_id SERIAL PRIMARY KEY,
+    title VARCHAR(100) NOT NULL UNIQUE,
+    salary DECIMAL(10,2) CHECK (salary > 0)
+);
+
+-- Диагнозы
+CREATE TABLE diagnoses (
+    diagnosis_id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL UNIQUE,
+    icd_code VARCHAR(10) UNIQUE,
+    description TEXT
+);
+
+-- Отделения
+CREATE TABLE departments (
+    department_id SERIAL PRIMARY KEY,
+    hospital_id INT NOT NULL REFERENCES hospitals(hospital_id) ON DELETE CASCADE,
+    name VARCHAR(100) NOT NULL,
+    head_doctor VARCHAR(150),
+    phone_extension VARCHAR(20),
+    UNIQUE(hospital_id, name)
+);
+
+-- Врачи
+CREATE TABLE doctors (
+    doctor_id SERIAL PRIMARY KEY,
+    hospital_id INT NOT NULL REFERENCES hospitals(hospital_id) ON DELETE CASCADE,
+    department_id INT NOT NULL REFERENCES departments(department_id) ON DELETE CASCADE,
+    inn VARCHAR(12) NOT NULL UNIQUE CHECK (inn ~ '^\d{12}$'),
+    full_name VARCHAR(150) NOT NULL,
+    birth_date DATE NOT NULL CHECK (birth_date < CURRENT_DATE),
+    phone VARCHAR(20),
+    position_id INT NOT NULL REFERENCES positions(position_id),
+    hire_date DATE NOT NULL DEFAULT CURRENT_DATE
+);
+
+-- Пациенты
+CREATE TABLE patients (
+    patient_id SERIAL PRIMARY KEY,
+    full_name VARCHAR(150) NOT NULL,
+    birth_date DATE NOT NULL,
+    gender CHAR(1) NOT NULL CHECK (gender IN ('M', 'F')),
+    address TEXT,
+    phone VARCHAR(20),
+    hospital_id INT NOT NULL REFERENCES hospitals(hospital_id) ON DELETE CASCADE,
+    department_id INT NOT NULL REFERENCES departments(department_id) ON DELETE CASCADE,
+    attending_doctor_id INT REFERENCES doctors(doctor_id) ON DELETE SET NULL,
+    diagnosis_id INT NOT NULL REFERENCES diagnoses(diagnosis_id),
+    hospitalization_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    discharge_date DATE,
+    diagnosis_date DATE,
+    condition_on_discharge TEXT,
+    status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('active', 'discharged', 'transferred')),
+    CHECK (discharge_date IS NULL OR discharge_date >= hospitalization_date)
+);
+
+-- История болезней
+CREATE TABLE medical_history (
+    record_id SERIAL PRIMARY KEY,
+    patient_id INT NOT NULL REFERENCES patients(patient_id) ON DELETE CASCADE,
+    diagnosis_id INT NOT NULL REFERENCES diagnoses(diagnosis_id),
+    doctor_id INT REFERENCES doctors(doctor_id) ON DELETE SET NULL,
+    examination_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    complaints TEXT,
+    prescriptions TEXT,
+    notes TEXT
+);
+
+
+-- Индексы
+CREATE INDEX idx_patients_name ON patients(full_name);
+CREATE INDEX idx_patients_dates ON patients(hospitalization_date);
+CREATE INDEX idx_patients_status ON patients(status);
+CREATE INDEX idx_doctors_name ON doctors(full_name);
+CREATE INDEX idx_doctors_department ON doctors(department_id);
+CREATE INDEX idx_doctors_hospital ON doctors(hospital_id);
+CREATE INDEX idx_history_patient ON medical_history(patient_id);
+CREATE INDEX idx_departments_hospital ON departments(hospital_id);
+
+-- Проекции
+
+-- По одной таблице
+CREATE VIEW view_active_patients AS
+SELECT patient_id, full_name, hospitalization_date, status
+FROM patients
+WHERE status = 'active';
+
+-- По нескольким таблицам
+CREATE VIEW view_patient_info AS
+SELECT 
+    p.patient_id,
+    p.full_name AS patient_name,
+    p.birth_date,
+    p.gender,
+    p.hospitalization_date,
+    p.status,
+    d.name AS diagnosis,
+    doc.full_name AS attending_doctor,
+    dep.name AS department,
+    h.name AS hospital
+FROM patients p
+JOIN diagnoses d ON p.diagnosis_id = d.diagnosis_id
+LEFT JOIN doctors doc ON p.attending_doctor_id = doc.doctor_id
+JOIN departments dep ON p.department_id = dep.department_id
+JOIN hospitals h ON p.hospital_id = h.hospital_id;
+
+-- с GROUP BY and HAVING
+CREATE VIEW view_patients_per_doctor AS
+SELECT 
+    doc.doctor_id,
+    doc.full_name AS doctor_name,
+    COUNT(p.patient_id) AS patients_count
+FROM doctors doc
+LEFT JOIN patients p ON doc.doctor_id = p.attending_doctor_id
+GROUP BY doc.doctor_id, doc.full_name
+HAVING COUNT(p.patient_id) > 0;
+
+-- Триггер
+CREATE OR REPLACE FUNCTION trg_update_patient_status()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.discharge_date IS NOT NULL THEN
+        NEW.status = 'discharged';
+    END IF;
+    
+    IF NEW.condition_on_discharge IS NOT NULL AND NEW.discharge_date IS NULL THEN
+        NEW.discharge_date := CURRENT_DATE;
+        NEW.status = 'discharged';
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER trigger_update_status
+    BEFORE INSERT OR UPDATE ON patients
+    FOR EACH ROW
+    EXECUTE FUNCTION trg_update_patient_status();
