@@ -1,0 +1,1557 @@
+import tkinter as tk
+from tkinter import ttk, messagebox
+import psycopg2
+from datetime import datetime
+
+class Database:
+    def __init__(self):
+        self.conn = None
+        self.connect()
+
+    def connect(self):
+        try:
+            self.conn = psycopg2.connect(
+                host="localhost",
+                database="hospital",
+                user="postgres",
+                password="12345",
+                port="5432"
+            )
+            print("Подключение к БД успешно!")
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось подключиться к БД: {e}")
+
+    def rollback(self):
+        if self.conn:
+            self.conn.rollback()
+
+    # Пациенты
+    def get_patients(self):
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT p.patient_id, p.full_name, p.birth_date, p.gender,
+                   p.address, p.phone, d.full_name as doctor_name,
+                   di.name as diagnosis_name, p.status
+            FROM patients p
+            LEFT JOIN doctors d ON p.attending_doctor_id = d.doctor_id
+            LEFT JOIN diagnoses di ON p.diagnosis_id = di.diagnosis_id
+            ORDER BY p.patient_id
+        """)
+        return cursor.fetchall()
+
+    def get_patient_by_id(self, patient_id):
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM patients WHERE patient_id = %s", (patient_id,))
+        return cursor.fetchone()
+
+    def add_patient(self, data):
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT INTO patients (full_name, birth_date, gender, address, phone,
+                                     hospital_id, department_id, attending_doctor_id, 
+                                     diagnosis_id, hospitalization_date)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING patient_id
+            """, data)
+            patient_id = cursor.fetchone()[0]
+            self.conn.commit()
+            return patient_id
+        except Exception as e:
+            self.rollback()
+            raise e
+
+    def update_patient(self, patient_id, data):
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("""
+                UPDATE patients 
+                SET full_name=%s, birth_date=%s, gender=%s, address=%s, phone=%s,
+                    attending_doctor_id=%s, diagnosis_id=%s
+                WHERE patient_id=%s
+            """, (*data, patient_id))
+            self.conn.commit()
+        except Exception as e:
+            self.rollback()
+            raise e
+
+    def delete_patient(self, patient_id):
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM patients WHERE patient_id=%s", (patient_id,))
+        self.conn.commit()
+
+    def discharge_patient(self, patient_id):
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            UPDATE patients 
+            SET discharge_date = CURRENT_DATE, status = 'discharged' 
+            WHERE patient_id=%s
+        """, (patient_id,))
+        self.conn.commit()
+
+    # Врачи
+    def get_doctors(self):
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT d.doctor_id, d.full_name, d.birth_date, d.phone,
+                   p.title as position_name, dep.name as department_name, h.name as hospital_name
+            FROM doctors d
+            LEFT JOIN positions p ON d.position_id = p.position_id
+            LEFT JOIN departments dep ON d.department_id = dep.department_id
+            LEFT JOIN hospitals h ON d.hospital_id = h.hospital_id
+            ORDER BY d.doctor_id
+        """)
+        return cursor.fetchall()
+
+    def get_doctors_list(self):
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT doctor_id, full_name FROM doctors ORDER BY full_name")
+        return cursor.fetchall()
+
+    def get_doctors_by_department(self, hospital_id, department_id):
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT doctor_id, full_name 
+            FROM doctors 
+            WHERE hospital_id = %s AND department_id = %s
+            ORDER BY full_name
+        """, (hospital_id, department_id))
+        return cursor.fetchall()
+
+    def get_doctor_by_id(self, doctor_id):
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM doctors WHERE doctor_id = %s", (doctor_id,))
+        return cursor.fetchone()
+
+    def add_doctor(self, data):
+        cursor = self.conn.cursor()
+        try:
+            # Проверка на дубликат ИНН
+            cursor.execute("SELECT doctor_id FROM doctors WHERE inn = %s", (data[3],))
+            if cursor.fetchone():
+                raise Exception("Врач с таким ИНН уже существует!")
+
+            cursor.execute("""
+                INSERT INTO doctors (full_name, birth_date, phone, inn, position_id, department_id, hospital_id, hire_date)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING doctor_id
+            """, data)
+            doctor_id = cursor.fetchone()[0]
+            self.conn.commit()
+            return doctor_id
+        except Exception as e:
+            self.rollback()
+            raise e
+
+    def update_doctor(self, doctor_id, data):
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("""
+                UPDATE doctors 
+                SET full_name=%s, birth_date=%s, phone=%s, position_id=%s, department_id=%s, hospital_id=%s
+                WHERE doctor_id=%s
+            """, (*data, doctor_id))
+            self.conn.commit()
+        except Exception as e:
+            self.rollback()
+            raise e
+
+    def delete_doctor(self, doctor_id):
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM doctors WHERE doctor_id=%s", (doctor_id,))
+        self.conn.commit()
+
+    # Должности
+    def get_positions(self):
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT position_id, title, salary FROM positions ORDER BY position_id")
+        return cursor.fetchall()
+
+    def get_position_by_id(self, position_id):
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM positions WHERE position_id = %s", (position_id,))
+        return cursor.fetchone()
+
+    def add_position(self, data):
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT INTO positions (title, salary)
+                VALUES (%s, %s)
+                RETURNING position_id
+            """, data)
+            position_id = cursor.fetchone()[0]
+            self.conn.commit()
+            return position_id
+        except Exception as e:
+            self.rollback()
+            raise e
+
+    def update_position(self, position_id, data):
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("""
+                UPDATE positions 
+                SET title=%s, salary=%s
+                WHERE position_id=%s
+            """, (*data, position_id))
+            self.conn.commit()
+        except Exception as e:
+            self.rollback()
+            raise e
+
+    def delete_position(self, position_id):
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM positions WHERE position_id=%s", (position_id,))
+        self.conn.commit()
+
+    # Диагнозы
+    def get_diagnoses(self):
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT diagnosis_id, name, icd_code, description FROM diagnoses ORDER BY diagnosis_id")
+        return cursor.fetchall()
+
+    def get_diagnosis_by_id(self, diagnosis_id):
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM diagnoses WHERE diagnosis_id = %s", (diagnosis_id,))
+        return cursor.fetchone()
+
+    def add_diagnosis(self, data):
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT INTO diagnoses (name, icd_code, description)
+                VALUES (%s, %s, %s)
+                RETURNING diagnosis_id
+            """, data)
+            diagnosis_id = cursor.fetchone()[0]
+            self.conn.commit()
+            return diagnosis_id
+        except Exception as e:
+            self.rollback()
+            raise e
+
+    def update_diagnosis(self, diagnosis_id, data):
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("""
+                UPDATE diagnoses 
+                SET name=%s, icd_code=%s, description=%s
+                WHERE diagnosis_id=%s
+            """, (*data, diagnosis_id))
+            self.conn.commit()
+        except Exception as e:
+            self.rollback()
+            raise e
+
+    def delete_diagnosis(self, diagnosis_id):
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM diagnoses WHERE diagnosis_id=%s", (diagnosis_id,))
+        self.conn.commit()
+
+    # Больницы
+    def get_hospitals(self):
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT hospital_id, name, address, phone, inn FROM hospitals ORDER BY hospital_id")
+        return cursor.fetchall()
+
+    def get_hospital_by_id(self, hospital_id):
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM hospitals WHERE hospital_id = %s", (hospital_id,))
+        return cursor.fetchone()
+
+    def add_hospital(self, data):
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT INTO hospitals (name, address, phone, inn)
+                VALUES (%s, %s, %s, %s)
+                RETURNING hospital_id
+            """, data)
+            hospital_id = cursor.fetchone()[0]
+            self.conn.commit()
+            return hospital_id
+        except Exception as e:
+            self.rollback()
+            raise e
+
+    def update_hospital(self, hospital_id, data):
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("""
+                UPDATE hospitals 
+                SET name=%s, address=%s, phone=%s, inn=%s
+                WHERE hospital_id=%s
+            """, (*data, hospital_id))
+            self.conn.commit()
+        except Exception as e:
+            self.rollback()
+            raise e
+
+    def delete_hospital(self, hospital_id):
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM hospitals WHERE hospital_id=%s", (hospital_id,))
+        self.conn.commit()
+
+    # Отделения
+    def get_departments(self, hospital_id=None):
+        cursor = self.conn.cursor()
+        if hospital_id:
+            cursor.execute("""
+                SELECT d.department_id, d.name, d.head_doctor, h.name as hospital_name
+                FROM departments d
+                JOIN hospitals h ON d.hospital_id = h.hospital_id
+                WHERE d.hospital_id = %s
+                ORDER BY d.department_id
+            """, (hospital_id,))
+        else:
+            cursor.execute("""
+                SELECT d.department_id, d.name, d.head_doctor, h.name as hospital_name
+                FROM departments d
+                JOIN hospitals h ON d.hospital_id = h.hospital_id
+                ORDER BY d.department_id
+            """)
+        return cursor.fetchall()
+
+    def get_departments_list(self, hospital_id=None):
+        cursor = self.conn.cursor()
+        if hospital_id:
+            cursor.execute("SELECT department_id, name FROM departments WHERE hospital_id=%s ORDER BY name",
+                           (hospital_id,))
+        else:
+            cursor.execute("SELECT department_id, name FROM departments ORDER BY name")
+        return cursor.fetchall()
+
+    def get_department_by_id(self, department_id):
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM departments WHERE department_id = %s", (department_id,))
+        return cursor.fetchone()
+
+    def add_department(self, data):
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT INTO departments (name, head_doctor, hospital_id)
+                VALUES (%s, %s, %s)
+                RETURNING department_id
+            """, data)
+            department_id = cursor.fetchone()[0]
+            self.conn.commit()
+            return department_id
+        except Exception as e:
+            self.rollback()
+            raise e
+
+    def update_department(self, department_id, data):
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("""
+                UPDATE departments 
+                SET name=%s, head_doctor=%s, hospital_id=%s
+                WHERE department_id=%s
+            """, (*data, department_id))
+            self.conn.commit()
+        except Exception as e:
+            self.rollback()
+            raise e
+
+    def delete_department(self, department_id):
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM departments WHERE department_id=%s", (department_id,))
+        self.conn.commit()
+
+    # Отчеты
+    def get_statistics(self):
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT 
+                COUNT(*) as total,
+                SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active,
+                SUM(CASE WHEN status = 'discharged' THEN 1 ELSE 0 END) as discharged
+            FROM patients
+        """)
+        return cursor.fetchone()
+
+    def get_patients_by_doctor(self, doctor_id):
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT p.full_name, p.birth_date, p.hospitalization_date, 
+                   d.name as diagnosis_name, p.status
+            FROM patients p
+            LEFT JOIN diagnoses d ON p.diagnosis_id = d.diagnosis_id
+            WHERE p.attending_doctor_id = %s
+            ORDER BY p.hospitalization_date DESC
+        """, (doctor_id,))
+        return cursor.fetchall()
+
+    def get_active_patients_report(self, sort_by="date_desc"):
+        cursor = self.conn.cursor()
+        order = "p.hospitalization_date DESC"
+        if sort_by == "date_asc":
+            order = "p.hospitalization_date ASC"
+        elif sort_by == "name":
+            order = "p.full_name ASC"
+        cursor.execute(f"""
+            SELECT p.full_name, p.birth_date, p.hospitalization_date, 
+                   p.status, doc.full_name as doctor_name
+            FROM patients p
+            LEFT JOIN doctors doc ON p.attending_doctor_id = doc.doctor_id
+            WHERE p.status = 'active'
+            ORDER BY {order}
+        """)
+        return cursor.fetchall()
+
+    def close(self):
+        if self.conn:
+            self.conn.close()
+
+class HospitalApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Больница - Система автоматизации")
+        self.root.geometry("1300x750")
+
+        self.db = Database()
+        self.create_widgets()
+
+        # Загружаем данные
+        self.load_patients()
+        self.load_doctors()
+        self.load_positions()
+        self.load_diagnoses()
+        self.load_hospitals()
+        self.load_departments()
+        self.sort_column = "ID"
+        self.sort_reverse = False
+
+    def create_widgets(self):
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+
+        self.create_patients_tab()
+        self.create_doctors_tab()
+        self.create_positions_tab()
+        self.create_diagnoses_tab()
+        self.create_hospitals_tab()
+        self.create_departments_tab()
+        self.create_reports_tab()
+
+    # Вкладка пациенты
+    def create_patients_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Пациенты")
+
+        # Панель поиска и фильтров
+        filter_frame = ttk.LabelFrame(tab, text="Поиск и фильтры")
+        filter_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        # Поиск по ФИО
+        ttk.Label(filter_frame, text="Поиск по ФИО:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
+        self.search_entry = ttk.Entry(filter_frame, width=30)
+        self.search_entry.grid(row=0, column=1, padx=5, pady=5)
+        ttk.Button(filter_frame, text="Искать", command=self.search_patients).grid(row=0, column=2, padx=5)
+        ttk.Button(filter_frame, text="Сбросить", command=self.clear_filters).grid(row=0, column=3, padx=5)
+
+        # Фильтр по статусу
+        ttk.Label(filter_frame, text="Фильтр по статусу:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
+        self.status_filter_combo = ttk.Combobox(filter_frame, values=["Все", "active", "discharged"],
+                                                width=15)
+        self.status_filter_combo.set("Все")
+        self.status_filter_combo.grid(row=1, column=1, padx=5, pady=5, sticky="w")
+        ttk.Button(filter_frame, text="Применить", command=self.filter_by_status).grid(row=1, column=2, padx=5)
+
+        self.filter_info_label = ttk.Label(filter_frame, text="", foreground="blue")
+        self.filter_info_label.grid(row=1, column=3, padx=10)
+
+        columns = ("ID", "ФИО", "Дата рождения", "Пол", "Адрес", "Телефон", "Врач", "Диагноз", "Статус")
+        self.patients_tree = ttk.Treeview(tab, columns=columns, show="headings", height=15)
+
+        # Переменные для сортировки
+        self.sort_column = "ID"
+        self.sort_reverse = False
+
+        for col in columns:
+            self.patients_tree.heading(col, text=col, command=lambda c=col: self.sort_patients_by_column(c))
+            self.patients_tree.column(col, width=100)
+
+        self.patients_tree.column("ID", width=50)
+        self.patients_tree.column("ФИО", width=150)
+        self.patients_tree.column("Адрес", width=150)
+
+        scrollbar = ttk.Scrollbar(tab, orient=tk.VERTICAL, command=self.patients_tree.yview)
+        self.patients_tree.configure(yscrollcommand=scrollbar.set)
+
+        self.patients_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y, pady=5)
+
+        btn_frame = ttk.Frame(tab)
+        btn_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        ttk.Button(btn_frame, text="Добавить", command=self.add_patient).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Изменить", command=self.edit_patient).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Удалить", command=self.delete_patient).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Выписать", command=self.discharge_patient).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Обновить", command=self.load_patients).pack(side=tk.LEFT, padx=5)
+
+    # Вкладка врачи
+    def create_doctors_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Врачи")
+
+        columns = ("ID", "ФИО", "Дата рождения", "Телефон", "Должность", "Отделение", "Больница")
+        self.doctors_tree = ttk.Treeview(tab, columns=columns, show="headings", height=15)
+
+        for col in columns:
+            self.doctors_tree.heading(col, text=col)
+            self.doctors_tree.column(col, width=120)
+
+        self.doctors_tree.column("ID", width=50)
+        self.doctors_tree.column("ФИО", width=150)
+
+        scrollbar = ttk.Scrollbar(tab, orient=tk.VERTICAL, command=self.doctors_tree.yview)
+        self.doctors_tree.configure(yscrollcommand=scrollbar.set)
+
+        self.doctors_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y, pady=5)
+
+        btn_frame = ttk.Frame(tab)
+        btn_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        ttk.Button(btn_frame, text="Добавить", command=self.add_doctor).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Изменить", command=self.edit_doctor).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Удалить", command=self.delete_doctor).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Обновить", command=self.load_doctors).pack(side=tk.LEFT, padx=5)
+
+    # Вкладка должности
+    def create_positions_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Должности")
+
+        columns = ("ID", "Название", "Оклад")
+        self.positions_tree = ttk.Treeview(tab, columns=columns, show="headings", height=15)
+
+        for col in columns:
+            self.positions_tree.heading(col, text=col)
+            self.positions_tree.column(col, width=200)
+
+        self.positions_tree.column("ID", width=50)
+
+        scrollbar = ttk.Scrollbar(tab, orient=tk.VERTICAL, command=self.positions_tree.yview)
+        self.positions_tree.configure(yscrollcommand=scrollbar.set)
+
+        self.positions_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y, pady=5)
+
+        btn_frame = ttk.Frame(tab)
+        btn_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        ttk.Button(btn_frame, text="Добавить", command=self.add_position).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Изменить", command=self.edit_position).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Удалить", command=self.delete_position).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Обновить", command=self.load_positions).pack(side=tk.LEFT, padx=5)
+
+    # Вкладка диагнозы
+    def create_diagnoses_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Диагнозы")
+
+        columns = ("ID", "Название", "Код МКБ", "Описание")
+        self.diagnoses_tree = ttk.Treeview(tab, columns=columns, show="headings", height=15)
+
+        for col in columns:
+            self.diagnoses_tree.heading(col, text=col)
+            self.diagnoses_tree.column(col, width=150)
+
+        self.diagnoses_tree.column("ID", width=50)
+
+        scrollbar = ttk.Scrollbar(tab, orient=tk.VERTICAL, command=self.diagnoses_tree.yview)
+        self.diagnoses_tree.configure(yscrollcommand=scrollbar.set)
+
+        self.diagnoses_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y, pady=5)
+
+        btn_frame = ttk.Frame(tab)
+        btn_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        ttk.Button(btn_frame, text="Добавить", command=self.add_diagnosis).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Изменить", command=self.edit_diagnosis).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Удалить", command=self.delete_diagnosis).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Обновить", command=self.load_diagnoses).pack(side=tk.LEFT, padx=5)
+
+    # Вкладка больницы
+    def create_hospitals_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Больницы")
+
+        columns = ("ID", "Название", "Адрес", "Телефон", "ИНН")
+        self.hospitals_tree = ttk.Treeview(tab, columns=columns, show="headings", height=15)
+
+        for col in columns:
+            self.hospitals_tree.heading(col, text=col)
+            self.hospitals_tree.column(col, width=150)
+
+        self.hospitals_tree.column("ID", width=50)
+
+        scrollbar = ttk.Scrollbar(tab, orient=tk.VERTICAL, command=self.hospitals_tree.yview)
+        self.hospitals_tree.configure(yscrollcommand=scrollbar.set)
+
+        self.hospitals_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y, pady=5)
+
+        btn_frame = ttk.Frame(tab)
+        btn_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        ttk.Button(btn_frame, text="Добавить", command=self.add_hospital).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Изменить", command=self.edit_hospital).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Удалить", command=self.delete_hospital).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Обновить", command=self.load_hospitals).pack(side=tk.LEFT, padx=5)
+
+    # Вкладка отделения
+    def create_departments_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Отделения")
+
+        columns = ("ID", "Название", "Зав. отделением", "Больница")
+        self.departments_tree = ttk.Treeview(tab, columns=columns, show="headings", height=15)
+
+        for col in columns:
+            self.departments_tree.heading(col, text=col)
+            self.departments_tree.column(col, width=150)
+
+        self.departments_tree.column("ID", width=50)
+
+        scrollbar = ttk.Scrollbar(tab, orient=tk.VERTICAL, command=self.departments_tree.yview)
+        self.departments_tree.configure(yscrollcommand=scrollbar.set)
+
+        self.departments_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y, pady=5)
+
+        btn_frame = ttk.Frame(tab)
+        btn_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        ttk.Button(btn_frame, text="Добавить", command=self.add_department).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Изменить", command=self.edit_department).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Удалить", command=self.delete_department).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Обновить", command=self.load_departments).pack(side=tk.LEFT, padx=5)
+
+    # Вкладка отчеты
+    def create_reports_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Отчеты")
+
+        group1 = ttk.LabelFrame(tab, text="Отчет 1: Общая статистика")
+        group1.pack(fill=tk.X, padx=10, pady=10)
+        ttk.Button(group1, text="Показать статистику", command=self.show_statistics).pack(padx=5, pady=5)
+
+        group2 = ttk.LabelFrame(tab, text="Отчет 2: Пациенты по врачам")
+        group2.pack(fill=tk.X, padx=10, pady=10)
+
+        frame2 = ttk.Frame(group2)
+        frame2.pack(fill=tk.X, padx=5, pady=5)
+        ttk.Label(frame2, text="Выберите врача:").pack(side=tk.LEFT, padx=5)
+        self.report_doctor_combo = ttk.Combobox(frame2, width=30)
+        self.report_doctor_combo.pack(side=tk.LEFT, padx=5)
+        ttk.Button(frame2, text="Сформировать", command=self.show_doctor_report).pack(side=tk.LEFT, padx=5)
+        ttk.Button(frame2, text="Обновить список", command=self.load_doctors_for_report).pack(side=tk.LEFT, padx=5)
+
+        group3 = ttk.LabelFrame(tab, text="Отчет 3: Активные пациенты")
+        group3.pack(fill=tk.X, padx=10, pady=10)
+
+        frame3 = ttk.Frame(group3)
+        frame3.pack(fill=tk.X, padx=5, pady=5)
+        ttk.Label(frame3, text="Сортировка:").pack(side=tk.LEFT, padx=5)
+        self.report_sort_combo = ttk.Combobox(frame3, values=["По дате (новые)", "По дате (старые)", "По ФИО"],
+                                              width=20)
+        self.report_sort_combo.set("По дате (новые)")
+        self.report_sort_combo.pack(side=tk.LEFT, padx=5)
+        ttk.Button(frame3, text="Сформировать", command=self.show_active_report).pack(side=tk.LEFT, padx=5)
+
+        report_frame = ttk.LabelFrame(tab, text="Результат")
+        report_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        self.report_text = tk.Text(report_frame, wrap=tk.WORD, height=15, font=("Courier", 10))
+        scrollbar = ttk.Scrollbar(report_frame, orient=tk.VERTICAL, command=self.report_text.yview)
+        self.report_text.configure(yscrollcommand=scrollbar.set)
+        self.report_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.load_doctors_for_report()
+
+    def load_patients(self):
+        for row in self.patients_tree.get_children():
+            self.patients_tree.delete(row)
+
+        # Получаем всех пациентов
+        all_patients = self.db.get_patients()
+
+        # Применяем поиск по ФИО (поле 1)
+        search_term = self.search_entry.get().strip().lower() if hasattr(self, 'search_entry') else ""
+        if search_term:
+            all_patients = [p for p in all_patients if search_term in p[1].lower()]
+
+        # Применяем фильтр по статусу (поле 8)
+        if hasattr(self, 'status_filter_combo'):
+            filter_status = self.status_filter_combo.get()
+            if filter_status != "Все":
+                all_patients = [p for p in all_patients if p[8] == filter_status]
+
+        # Вставляем в таблицу
+        for p in all_patients:
+            self.patients_tree.insert("", tk.END, values=p)
+
+        # Обновляем статусную строку, если она есть
+        if hasattr(self, 'status_label'):
+            filter_text = []
+            if search_term:
+                filter_text.append(f"поиск: '{search_term}'")
+            if hasattr(self, 'status_filter_combo') and self.status_filter_combo.get() != "Все":
+                filter_text.append(f"статус: {self.status_filter_combo.get()}")
+
+            if filter_text:
+                self.status_label.config(text=f"Загружено: {len(all_patients)} ({', '.join(filter_text)})")
+            else:
+                self.status_label.config(text=f"Загружено записей: {len(all_patients)}")
+
+    def search_patients(self):
+        """Поиск пациентов по ФИО"""
+        self.load_patients()
+
+    def filter_by_status(self):
+        """Фильтр пациентов по статусу"""
+        self.load_patients()
+
+    def clear_filters(self):
+        """Сброс поиска и фильтра"""
+        self.search_entry.delete(0, tk.END)
+        self.status_filter_combo.set("Все")
+        self.load_patients()
+
+    def sort_patients_by_column(self, col):
+        """Сортировка пациентов по выбранной колонке"""
+        items = [(self.patients_tree.set(item, col), item) for item in self.patients_tree.get_children("")]
+
+        if col == "ID":
+            items.sort(key=lambda x: int(x[0]) if x[0].isdigit() else 0, reverse=self.sort_reverse)
+        elif col in ["ФИО", "Пол", "Адрес", "Телефон", "Врач", "Диагноз", "Статус"]:
+            items.sort(key=lambda x: x[0].lower(), reverse=self.sort_reverse)
+        elif col == "Дата рождения":
+            items.sort(key=lambda x: x[0], reverse=self.sort_reverse)
+        else:
+            items.sort(key=lambda x: x[0], reverse=self.sort_reverse)
+
+        for index, (val, item) in enumerate(items):
+            self.patients_tree.move(item, "", index)
+
+        self.sort_reverse = not self.sort_reverse
+
+    def load_doctors(self):
+        for row in self.doctors_tree.get_children():
+            self.doctors_tree.delete(row)
+        for d in self.db.get_doctors():
+            self.doctors_tree.insert("", tk.END, values=d)
+
+    def load_positions(self):
+        for row in self.positions_tree.get_children():
+            self.positions_tree.delete(row)
+        for p in self.db.get_positions():
+            self.positions_tree.insert("", tk.END, values=p)
+
+    def load_diagnoses(self):
+        for row in self.diagnoses_tree.get_children():
+            self.diagnoses_tree.delete(row)
+        for d in self.db.get_diagnoses():
+            self.diagnoses_tree.insert("", tk.END, values=d)
+
+    def load_hospitals(self):
+        for row in self.hospitals_tree.get_children():
+            self.hospitals_tree.delete(row)
+        for h in self.db.get_hospitals():
+            self.hospitals_tree.insert("", tk.END, values=h)
+
+    def load_departments(self):
+        for row in self.departments_tree.get_children():
+            self.departments_tree.delete(row)
+        for d in self.db.get_departments():
+            self.departments_tree.insert("", tk.END, values=d)
+
+    # Методы для пациентов
+    def get_selected_patient_id(self):
+        selected = self.patients_tree.selection()
+        if selected:
+            return self.patients_tree.item(selected[0])['values'][0]
+        return None
+
+    def add_patient(self):
+        self.open_patient_form()
+
+    def edit_patient(self):
+        pid = self.get_selected_patient_id()
+        if not pid:
+            messagebox.showwarning("Внимание", "Выберите пациента")
+            return
+        self.open_patient_form(pid)
+
+    def delete_patient(self):
+        pid = self.get_selected_patient_id()
+        if not pid:
+            messagebox.showwarning("Внимание", "Выберите пациента")
+            return
+        if messagebox.askyesno("Подтверждение", "Удалить пациента?"):
+            self.db.delete_patient(pid)
+            self.load_patients()
+
+    def discharge_patient(self):
+        pid = self.get_selected_patient_id()
+        if not pid:
+            messagebox.showwarning("Внимание", "Выберите пациента")
+            return
+        if messagebox.askyesno("Подтверждение", "Выписать пациента?"):
+            self.db.discharge_patient(pid)
+            self.load_patients()
+            messagebox.showinfo("Успех", "Пациент выписан")
+
+    def open_patient_form(self, patient_id=None):
+        form = tk.Toplevel(self.root)
+        form.title("Пациент" + (" (ред.)" if patient_id else " (доб.)"))
+        form.geometry("500x650")
+        form.grab_set()
+
+        fields = {}
+        labels = [("ФИО:", "full_name"), ("Дата рожд. (ГГГГ-ММ-ДД):", "birth_date"),
+                  ("Пол (М/Ж):", "gender"), ("Адрес:", "address"), ("Телефон:", "phone")]
+
+        for i, (label, key) in enumerate(labels):
+            ttk.Label(form, text=label).grid(row=i, column=0, padx=10, pady=5, sticky="e")
+            fields[key] = ttk.Entry(form, width=40)
+            fields[key].grid(row=i, column=1, padx=10, pady=5)
+
+        ttk.Label(form, text="Больница:").grid(row=5, column=0, padx=10, pady=5, sticky="e")
+        hospital_cb = ttk.Combobox(form, width=37)
+        hospital_cb.grid(row=5, column=1, padx=10, pady=5)
+
+        ttk.Label(form, text="Отделение:").grid(row=6, column=0, padx=10, pady=5, sticky="e")
+        department_cb = ttk.Combobox(form, width=37)
+        department_cb.grid(row=6, column=1, padx=10, pady=5)
+
+        ttk.Label(form, text="Врач:").grid(row=7, column=0, padx=10, pady=5, sticky="e")
+        doctor_cb = ttk.Combobox(form, width=37)
+        doctor_cb.grid(row=7, column=1, padx=10, pady=5)
+
+        ttk.Label(form, text="Диагноз:").grid(row=8, column=0, padx=10, pady=5, sticky="e")
+        diagnosis_cb = ttk.Combobox(form, width=37)
+        diagnosis_cb.grid(row=8, column=1, padx=10, pady=5)
+
+        hospitals = self.db.get_hospitals()
+        hospital_cb['values'] = [f"{h[0]} - {h[1]}" for h in hospitals]
+
+        diagnoses = self.db.get_diagnoses()
+        diagnosis_cb['values'] = [f"{d[0]} - {d[1]}" for d in diagnoses]
+
+        def update_departments(event):
+            if hospital_cb.get():
+                hid = int(hospital_cb.get().split(" - ")[0])
+                depts = self.db.get_departments_list(hid)
+                department_cb['values'] = [f"{d[0]} - {d[1]}" for d in depts]
+                department_cb.set('')
+                doctor_cb.set('')
+                doctor_cb['values'] = []
+
+        def update_doctors(event):
+            if hospital_cb.get() and department_cb.get():
+                hid = int(hospital_cb.get().split(" - ")[0])
+                did = int(department_cb.get().split(" - ")[0])
+                doctors = self.db.get_doctors_by_department(hid, did)
+                doctor_cb['values'] = [f"{d[0]} - {d[1]}" for d in doctors]
+                doctor_cb.set('')
+
+        hospital_cb.bind("<<ComboboxSelected>>", update_departments)
+        department_cb.bind("<<ComboboxSelected>>", update_doctors)
+
+        if patient_id:
+            patient = self.db.get_patient_by_id(patient_id)
+            if patient:
+                fields["full_name"].insert(0, patient[1] or "")
+                fields["birth_date"].insert(0, str(patient[2]) if patient[2] else "")
+                fields["gender"].insert(0, patient[3] or "")
+                fields["address"].insert(0, patient[4] or "")
+                fields["phone"].insert(0, patient[5] or "")
+
+                for h in hospitals:
+                    if h[0] == patient[6]:
+                        hospital_cb.set(f"{h[0]} - {h[1]}")
+                        break
+
+                if patient[6]:
+                    depts = self.db.get_departments_list(patient[6])
+                    department_cb['values'] = [f"{d[0]} - {d[1]}" for d in depts]
+                    for d in depts:
+                        if d[0] == patient[7]:
+                            department_cb.set(f"{d[0]} - {d[1]}")
+                            break
+
+                if patient[6] and patient[7]:
+                    doctors = self.db.get_doctors_by_department(patient[6], patient[7])
+                    doctor_cb['values'] = [f"{d[0]} - {d[1]}" for d in doctors]
+                    if patient[8]:
+                        for d in doctors:
+                            if d[0] == patient[8]:
+                                doctor_cb.set(f"{d[0]} - {d[1]}")
+                                break
+
+                for d in diagnoses:
+                    if d[0] == patient[9]:
+                        diagnosis_cb.set(f"{d[0]} - {d[1]}")
+                        break
+
+        def save():
+            try:
+                if not hospital_cb.get():
+                    messagebox.showwarning("Внимание", "Выберите больницу")
+                    return
+                if not department_cb.get():
+                    messagebox.showwarning("Внимание", "Выберите отделение")
+                    return
+
+                hid = int(hospital_cb.get().split(" - ")[0])
+                depid = int(department_cb.get().split(" - ")[0])
+
+                doctor_id = None
+                if doctor_cb.get():
+                    doctor_id = int(doctor_cb.get().split(" - ")[0])
+
+                diagnosis_id = 1
+                if diagnosis_cb.get():
+                    diagnosis_id = int(diagnosis_cb.get().split(" - ")[0])
+
+                data = (fields["full_name"].get(), fields["birth_date"].get(), fields["gender"].get(),
+                        fields["address"].get(), fields["phone"].get(), hid, depid, doctor_id, diagnosis_id,
+                        datetime.now().strftime("%Y-%m-%d"))
+
+                if patient_id:
+                    self.db.update_patient(patient_id, data[:8])
+                    messagebox.showinfo("Успех", "Данные обновлены")
+                else:
+                    self.db.add_patient(data)
+                    messagebox.showinfo("Успех", "Пациент добавлен")
+                form.destroy()
+                self.load_patients()
+            except Exception as e:
+                messagebox.showerror("Ошибка", str(e))
+
+        ttk.Button(form, text="Сохранить", command=save).grid(row=9, column=0, columnspan=2, pady=20)
+
+    def sort_patients_by_column(self, col):
+        """Сортировка пациентов по выбранной колонке"""
+        # Получаем все элементы
+        items = [(self.patients_tree.set(item, col), item) for item in self.patients_tree.get_children("")]
+
+        # Определяем тип данных для сортировки
+        if col == "ID":
+            items.sort(key=lambda x: int(x[0]) if x[0].isdigit() else 0, reverse=self.sort_reverse)
+        elif col in ["ФИО", "Пол", "Адрес", "Телефон", "Врач", "Диагноз", "Статус"]:
+            items.sort(key=lambda x: x[0].lower(), reverse=self.sort_reverse)
+        elif col == "Дата рождения":
+            items.sort(key=lambda x: x[0], reverse=self.sort_reverse)
+        else:
+            items.sort(key=lambda x: x[0], reverse=self.sort_reverse)
+
+        # Переставляем элементы
+        for index, (val, item) in enumerate(items):
+            self.patients_tree.move(item, "", index)
+
+        # Меняем направление сортировки для следующего клика
+        self.sort_reverse = not self.sort_reverse
+
+    # Методы для врачей
+    def get_selected_doctor_id(self):
+        s = self.doctors_tree.selection()
+        return self.doctors_tree.item(s[0])['values'][0] if s else None
+
+    def add_doctor(self):
+        form = tk.Toplevel(self.root)
+        form.title("Новый врач")
+        form.geometry("500x550")
+        form.grab_set()
+
+        ttk.Label(form, text="ФИО:").grid(row=0, column=0, padx=10, pady=5, sticky="e")
+        name_e = ttk.Entry(form, width=40)
+        name_e.grid(row=0, column=1, padx=10, pady=5)
+
+        ttk.Label(form, text="Дата рожд. (ГГГГ-ММ-ДД):").grid(row=1, column=0, padx=10, pady=5, sticky="e")
+        birth_e = ttk.Entry(form, width=40)
+        birth_e.grid(row=1, column=1, padx=10, pady=5)
+
+        ttk.Label(form, text="Телефон:").grid(row=2, column=0, padx=10, pady=5, sticky="e")
+        phone_e = ttk.Entry(form, width=40)
+        phone_e.grid(row=2, column=1, padx=10, pady=5)
+
+        ttk.Label(form, text="ИНН:").grid(row=3, column=0, padx=10, pady=5, sticky="e")
+        inn_e = ttk.Entry(form, width=40)
+        inn_e.grid(row=3, column=1, padx=10, pady=5)
+
+        ttk.Label(form, text="Больница:").grid(row=4, column=0, padx=10, pady=5, sticky="e")
+        hospital_cb = ttk.Combobox(form, width=37)
+        hospital_cb.grid(row=4, column=1, padx=10, pady=5)
+
+        ttk.Label(form, text="Отделение:").grid(row=5, column=0, padx=10, pady=5, sticky="e")
+        department_cb = ttk.Combobox(form, width=37)
+        department_cb.grid(row=5, column=1, padx=10, pady=5)
+
+        ttk.Label(form, text="Должность:").grid(row=6, column=0, padx=10, pady=5, sticky="e")
+        position_cb = ttk.Combobox(form, width=37)
+        position_cb.grid(row=6, column=1, padx=10, pady=5)
+
+        def add_new_position():
+            add_form = tk.Toplevel(form)
+            add_form.title("Новая должность")
+            add_form.geometry("400x200")
+            add_form.grab_set()
+
+            ttk.Label(add_form, text="Название должности:").pack(padx=10, pady=10)
+            pos_name = ttk.Entry(add_form, width=40)
+            pos_name.pack(padx=10, pady=5)
+
+            ttk.Label(add_form, text="Оклад:").pack(padx=10, pady=5)
+            pos_salary = ttk.Entry(add_form, width=40)
+            pos_salary.pack(padx=10, pady=5)
+
+            def save_position():
+                if pos_name.get():
+                    self.db.add_position((pos_name.get(), pos_salary.get() or 0))
+                    positions = self.db.get_positions()
+                    position_cb['values'] = [f"{p[0]} - {p[1]}" for p in positions]
+                    add_form.destroy()
+                    messagebox.showinfo("Успех", "Должность добавлена")
+
+            ttk.Button(add_form, text="Сохранить", command=save_position).pack(pady=20)
+
+        ttk.Button(form, text="+ Новая должность", command=add_new_position).grid(row=7, column=1, padx=10, pady=5,
+                                                                                  sticky="w")
+
+        hospitals = self.db.get_hospitals()
+        hospital_cb['values'] = [f"{h[0]} - {h[1]}" for h in hospitals]
+
+        positions = self.db.get_positions()
+        position_cb['values'] = [f"{p[0]} - {p[1]}" for p in positions]
+
+        def update_departments(event):
+            if hospital_cb.get():
+                hid = int(hospital_cb.get().split(" - ")[0])
+                depts = self.db.get_departments_list(hid)
+                department_cb['values'] = [f"{d[0]} - {d[1]}" for d in depts]
+                department_cb.set('')
+
+        hospital_cb.bind("<<ComboboxSelected>>", update_departments)
+
+        def save():
+            try:
+                if not name_e.get():
+                    messagebox.showwarning("Внимание", "Введите ФИО врача")
+                    return
+                if not inn_e.get():
+                    messagebox.showwarning("Внимание", "Введите ИНН врача")
+                    return
+                if not hospital_cb.get():
+                    messagebox.showwarning("Внимание", "Выберите больницу")
+                    return
+                if not department_cb.get():
+                    messagebox.showwarning("Внимание", "Выберите отделение")
+                    return
+
+                hid = int(hospital_cb.get().split(" - ")[0])
+                did = int(department_cb.get().split(" - ")[0])
+                pid = int(position_cb.get().split(" - ")[0]) if position_cb.get() else 1
+
+                data = (name_e.get(), birth_e.get(), phone_e.get(), inn_e.get(), pid, did, hid, "2024-01-01")
+                self.db.add_doctor(data)
+                form.destroy()
+                self.load_doctors()
+                self.load_doctors_for_report()
+                messagebox.showinfo("Успех", "Врач добавлен")
+            except Exception as e:
+                error_msg = str(e)
+                if "ИНН" in error_msg or "duplicate" in error_msg.lower():
+                    messagebox.showerror("Ошибка", "Врач с таким ИНН уже существует!")
+                else:
+                    messagebox.showerror("Ошибка", f"Ошибка при добавлении врача: {error_msg}")
+
+        ttk.Button(form, text="Сохранить", command=save).grid(row=8, column=0, columnspan=2, pady=20)
+
+    def edit_doctor(self):
+        did = self.get_selected_doctor_id()
+        if not did:
+            messagebox.showwarning("Внимание", "Выберите врача")
+            return
+
+        doctor = self.db.get_doctor_by_id(did)
+        if not doctor:
+            return
+
+        form = tk.Toplevel(self.root)
+        form.title("Редактирование врача")
+        form.geometry("500x550")
+        form.grab_set()
+
+        ttk.Label(form, text="ФИО:").grid(row=0, column=0, padx=10, pady=5, sticky="e")
+        name_e = ttk.Entry(form, width=40)
+        name_e.insert(0, doctor[3] or "")
+        name_e.grid(row=0, column=1, padx=10, pady=5)
+
+        ttk.Label(form, text="Дата рожд. (ГГГГ-ММ-ДД):").grid(row=1, column=0, padx=10, pady=5, sticky="e")
+        birth_e = ttk.Entry(form, width=40)
+        birth_e.insert(0, str(doctor[4]) if doctor[4] else "")
+        birth_e.grid(row=1, column=1, padx=10, pady=5)
+
+        ttk.Label(form, text="Телефон:").grid(row=2, column=0, padx=10, pady=5, sticky="e")
+        phone_e = ttk.Entry(form, width=40)
+        phone_e.insert(0, doctor[5] or "")
+        phone_e.grid(row=2, column=1, padx=10, pady=5)
+
+        ttk.Label(form, text="Больница:").grid(row=3, column=0, padx=10, pady=5, sticky="e")
+        hospital_cb = ttk.Combobox(form, width=37)
+        hospital_cb.grid(row=3, column=1, padx=10, pady=5)
+
+        ttk.Label(form, text="Отделение:").grid(row=4, column=0, padx=10, pady=5, sticky="e")
+        department_cb = ttk.Combobox(form, width=37)
+        department_cb.grid(row=4, column=1, padx=10, pady=5)
+
+        ttk.Label(form, text="Должность:").grid(row=5, column=0, padx=10, pady=5, sticky="e")
+        position_cb = ttk.Combobox(form, width=37)
+        position_cb.grid(row=5, column=1, padx=10, pady=5)
+
+        hospitals = self.db.get_hospitals()
+        hospital_cb['values'] = [f"{h[0]} - {h[1]}" for h in hospitals]
+
+        positions = self.db.get_positions()
+        position_cb['values'] = [f"{p[0]} - {p[1]}" for p in positions]
+
+        for h in hospitals:
+            if h[0] == doctor[6]:
+                hospital_cb.set(f"{h[0]} - {h[1]}")
+                break
+
+        for p in positions:
+            if p[0] == doctor[9]:
+                position_cb.set(f"{p[0]} - {p[1]}")
+                break
+
+        def update_departments(event):
+            if hospital_cb.get():
+                hid = int(hospital_cb.get().split(" - ")[0])
+                depts = self.db.get_departments_list(hid)
+                department_cb['values'] = [f"{d[0]} - {d[1]}" for d in depts]
+                for d in depts:
+                    if d[0] == doctor[7]:
+                        department_cb.set(f"{d[0]} - {d[1]}")
+                        break
+
+        hospital_cb.bind("<<ComboboxSelected>>", update_departments)
+
+        if doctor[6]:
+            depts = self.db.get_departments_list(doctor[6])
+            department_cb['values'] = [f"{d[0]} - {d[1]}" for d in depts]
+            for d in depts:
+                if d[0] == doctor[7]:
+                    department_cb.set(f"{d[0]} - {d[1]}")
+                    break
+
+        def save():
+            try:
+                hid = int(hospital_cb.get().split(" - ")[0]) if hospital_cb.get() else 1
+                depid = int(department_cb.get().split(" - ")[0]) if department_cb.get() else 1
+                pid = int(position_cb.get().split(" - ")[0]) if position_cb.get() else 1
+
+                data = (name_e.get(), birth_e.get(), phone_e.get(), pid, depid, hid)
+                self.db.update_doctor(did, data)
+                form.destroy()
+                self.load_doctors()
+                self.load_doctors_for_report()
+                messagebox.showinfo("Успех", "Данные врача обновлены")
+            except Exception as e:
+                messagebox.showerror("Ошибка", str(e))
+
+        ttk.Button(form, text="Сохранить", command=save).grid(row=6, column=0, columnspan=2, pady=20)
+
+    def delete_doctor(self):
+        did = self.get_selected_doctor_id()
+        if not did:
+            messagebox.showwarning("Внимание", "Выберите врача")
+            return
+        if messagebox.askyesno("Подтверждение", "Удалить врача?"):
+            self.db.delete_doctor(did)
+            self.load_doctors()
+            self.load_doctors_for_report()
+
+    # Методы для должностей
+    def get_selected_position_id(self):
+        s = self.positions_tree.selection()
+        return self.positions_tree.item(s[0])['values'][0] if s else None
+
+    def add_position(self):
+        form = tk.Toplevel(self.root)
+        form.title("Новая должность")
+        form.geometry("400x250")
+        form.grab_set()
+
+        ttk.Label(form, text="Название должности:").pack(padx=10, pady=10)
+        name_e = ttk.Entry(form, width=40)
+        name_e.pack(padx=10, pady=5)
+
+        ttk.Label(form, text="Оклад:").pack(padx=10, pady=5)
+        salary_e = ttk.Entry(form, width=40)
+        salary_e.pack(padx=10, pady=5)
+
+        def save():
+            if name_e.get():
+                self.db.add_position((name_e.get(), salary_e.get() or 0))
+                form.destroy()
+                self.load_positions()
+                messagebox.showinfo("Успех", "Должность добавлена")
+
+        ttk.Button(form, text="Сохранить", command=save).pack(pady=20)
+
+    def edit_position(self):
+        pid = self.get_selected_position_id()
+        if not pid:
+            messagebox.showwarning("Внимание", "Выберите должность")
+            return
+
+        pos = self.db.get_position_by_id(pid)
+        if not pos:
+            return
+
+        form = tk.Toplevel(self.root)
+        form.title("Редактирование должности")
+        form.geometry("400x250")
+        form.grab_set()
+
+        ttk.Label(form, text="Название должности:").pack(padx=10, pady=10)
+        name_e = ttk.Entry(form, width=40)
+        name_e.insert(0, pos[1])
+        name_e.pack(padx=10, pady=5)
+
+        ttk.Label(form, text="Оклад:").pack(padx=10, pady=5)
+        salary_e = ttk.Entry(form, width=40)
+        salary_e.insert(0, pos[2])
+        salary_e.pack(padx=10, pady=5)
+
+        def save():
+            self.db.update_position(pid, (name_e.get(), salary_e.get() or 0))
+            form.destroy()
+            self.load_positions()
+            messagebox.showinfo("Успех", "Должность обновлена")
+
+        ttk.Button(form, text="Сохранить", command=save).pack(pady=20)
+
+    def delete_position(self):
+        pid = self.get_selected_position_id()
+        if not pid:
+            messagebox.showwarning("Внимание", "Выберите должность")
+            return
+        if messagebox.askyesno("Подтверждение", "Удалить должность?"):
+            try:
+                self.db.delete_position(pid)
+                self.load_positions()
+                messagebox.showinfo("Успех", "Должность удалена")
+            except:
+                messagebox.showerror("Ошибка", "Нельзя удалить должность, которая используется врачами")
+
+    # Методы для диагнозов
+    def get_selected_diagnosis_id(self):
+        s = self.diagnoses_tree.selection()
+        return self.diagnoses_tree.item(s[0])['values'][0] if s else None
+
+    def add_diagnosis(self):
+        form = tk.Toplevel(self.root)
+        form.title("Новый диагноз")
+        form.geometry("450x350")
+        form.grab_set()
+
+        ttk.Label(form, text="Название:").grid(row=0, column=0, padx=10, pady=5, sticky="e")
+        name_e = ttk.Entry(form, width=40)
+        name_e.grid(row=0, column=1, padx=10, pady=5)
+
+        ttk.Label(form, text="Код МКБ:").grid(row=1, column=0, padx=10, pady=5, sticky="e")
+        code_e = ttk.Entry(form, width=40)
+        code_e.grid(row=1, column=1, padx=10, pady=5)
+
+        ttk.Label(form, text="Описание:").grid(row=2, column=0, padx=10, pady=5, sticky="e")
+        desc_e = tk.Text(form, width=30, height=5)
+        desc_e.grid(row=2, column=1, padx=10, pady=5)
+
+        def save():
+            if name_e.get():
+                self.db.add_diagnosis((name_e.get(), code_e.get(), desc_e.get("1.0", tk.END).strip()))
+                form.destroy()
+                self.load_diagnoses()
+                messagebox.showinfo("Успех", "Диагноз добавлен")
+
+        ttk.Button(form, text="Сохранить", command=save).grid(row=3, column=0, columnspan=2, pady=20)
+
+    def edit_diagnosis(self):
+        did = self.get_selected_diagnosis_id()
+        if not did:
+            messagebox.showwarning("Внимание", "Выберите диагноз")
+            return
+
+        diag = self.db.get_diagnosis_by_id(did)
+        if not diag:
+            return
+
+        form = tk.Toplevel(self.root)
+        form.title("Редактирование диагноза")
+        form.geometry("450x350")
+        form.grab_set()
+
+        ttk.Label(form, text="Название:").grid(row=0, column=0, padx=10, pady=5, sticky="e")
+        name_e = ttk.Entry(form, width=40)
+        name_e.insert(0, diag[1])
+        name_e.grid(row=0, column=1, padx=10, pady=5)
+
+        ttk.Label(form, text="Код МКБ:").grid(row=1, column=0, padx=10, pady=5, sticky="e")
+        code_e = ttk.Entry(form, width=40)
+        code_e.insert(0, diag[2] or "")
+        code_e.grid(row=1, column=1, padx=10, pady=5)
+
+        ttk.Label(form, text="Описание:").grid(row=2, column=0, padx=10, pady=5, sticky="e")
+        desc_e = tk.Text(form, width=30, height=5)
+        desc_e.insert("1.0", diag[3] or "")
+        desc_e.grid(row=2, column=1, padx=10, pady=5)
+
+        def save():
+            self.db.update_diagnosis(did, (name_e.get(), code_e.get(), desc_e.get("1.0", tk.END).strip()))
+            form.destroy()
+            self.load_diagnoses()
+            messagebox.showinfo("Успех", "Диагноз обновлен")
+
+        ttk.Button(form, text="Сохранить", command=save).grid(row=3, column=0, columnspan=2, pady=20)
+
+    def delete_diagnosis(self):
+        did = self.get_selected_diagnosis_id()
+        if not did:
+            messagebox.showwarning("Внимание", "Выберите диагноз")
+            return
+        if messagebox.askyesno("Подтверждение", "Удалить диагноз?"):
+            try:
+                self.db.delete_diagnosis(did)
+                self.load_diagnoses()
+                messagebox.showinfo("Успех", "Диагноз удален")
+            except:
+                messagebox.showerror("Ошибка", "Нельзя удалить диагноз, который используется пациентами")
+
+    # Методы для больниц
+    def get_selected_hospital_id(self):
+        s = self.hospitals_tree.selection()
+        return self.hospitals_tree.item(s[0])['values'][0] if s else None
+
+    def add_hospital(self):
+        form = tk.Toplevel(self.root)
+        form.title("Новая больница")
+        form.geometry("450x350")
+        form.grab_set()
+
+        labels = [("Название:", "name"), ("Адрес:", "address"), ("Телефон:", "phone"), ("ИНН:", "inn")]
+        entries = {}
+        for i, (label, key) in enumerate(labels):
+            ttk.Label(form, text=label).grid(row=i, column=0, padx=10, pady=5, sticky="e")
+            entries[key] = ttk.Entry(form, width=40)
+            entries[key].grid(row=i, column=1, padx=10, pady=5)
+
+        def save():
+            if entries["name"].get():
+                self.db.add_hospital((entries["name"].get(), entries["address"].get(),
+                                      entries["phone"].get(), entries["inn"].get()))
+                form.destroy()
+                self.load_hospitals()
+                messagebox.showinfo("Успех", "Больница добавлена")
+
+        ttk.Button(form, text="Сохранить", command=save).grid(row=4, column=0, columnspan=2, pady=20)
+
+    def edit_hospital(self):
+        hid = self.get_selected_hospital_id()
+        if not hid:
+            messagebox.showwarning("Внимание", "Выберите больницу")
+            return
+
+        hosp = self.db.get_hospital_by_id(hid)
+        if not hosp:
+            return
+
+        form = tk.Toplevel(self.root)
+        form.title("Редактирование больницы")
+        form.geometry("450x350")
+        form.grab_set()
+
+        labels = [("Название:", 1), ("Адрес:", 2), ("Телефон:", 3), ("ИНН:", 4)]
+        entries = {}
+        for i, (label, idx) in enumerate(labels):
+            ttk.Label(form, text=label).grid(row=i, column=0, padx=10, pady=5, sticky="e")
+            entries[idx] = ttk.Entry(form, width=40)
+            entries[idx].grid(row=i, column=1, padx=10, pady=5)
+            entries[idx].insert(0, hosp[idx] or "")
+
+        def save():
+            self.db.update_hospital(hid, (entries[1].get(), entries[2].get(), entries[3].get(), entries[4].get()))
+            form.destroy()
+            self.load_hospitals()
+            messagebox.showinfo("Успех", "Данные больницы обновлены")
+
+        ttk.Button(form, text="Сохранить", command=save).grid(row=4, column=0, columnspan=2, pady=20)
+
+    def delete_hospital(self):
+        hid = self.get_selected_hospital_id()
+        if not hid:
+            messagebox.showwarning("Внимание", "Выберите больницу")
+            return
+        if messagebox.askyesno("Подтверждение", "Удалить больницу? (отделения и врачи тоже удалятся)"):
+            self.db.delete_hospital(hid)
+            self.load_hospitals()
+            self.load_departments()
+            self.load_doctors()
+
+    # Методы для отделений
+    def get_selected_department_id(self):
+        s = self.departments_tree.selection()
+        return self.departments_tree.item(s[0])['values'][0] if s else None
+
+    def add_department(self):
+        form = tk.Toplevel(self.root)
+        form.title("Новое отделение")
+        form.geometry("450x350")
+        form.grab_set()
+
+        ttk.Label(form, text="Название:").grid(row=0, column=0, padx=10, pady=5, sticky="e")
+        name_e = ttk.Entry(form, width=40)
+        name_e.grid(row=0, column=1, padx=10, pady=5)
+
+        ttk.Label(form, text="Зав. отделением:").grid(row=1, column=0, padx=10, pady=5, sticky="e")
+        head_e = ttk.Entry(form, width=40)
+        head_e.grid(row=1, column=1, padx=10, pady=5)
+
+        ttk.Label(form, text="Больница:").grid(row=2, column=0, padx=10, pady=5, sticky="e")
+        hos_cb = ttk.Combobox(form, width=37)
+        hos_cb.grid(row=2, column=1, padx=10, pady=5)
+
+        hospitals = self.db.get_hospitals()
+        hos_cb['values'] = [f"{h[0]} - {h[1]}" for h in hospitals]
+
+        def save():
+            if name_e.get() and hos_cb.get():
+                hid = int(hos_cb.get().split(" - ")[0])
+                self.db.add_department((name_e.get(), head_e.get(), hid))
+                form.destroy()
+                self.load_departments()
+                messagebox.showinfo("Успех", "Отделение добавлено")
+
+        ttk.Button(form, text="Сохранить", command=save).grid(row=3, column=0, columnspan=2, pady=20)
+
+    def edit_department(self):
+        did = self.get_selected_department_id()
+        if not did:
+            messagebox.showwarning("Внимание", "Выберите отделение")
+            return
+
+        dep = self.db.get_department_by_id(did)
+        if not dep:
+            return
+
+        form = tk.Toplevel(self.root)
+        form.title("Редактирование отделения")
+        form.geometry("450x350")
+        form.grab_set()
+
+        ttk.Label(form, text="Название:").grid(row=0, column=0, padx=10, pady=5, sticky="e")
+        name_e = ttk.Entry(form, width=40)
+        name_e.insert(0, dep[1])
+        name_e.grid(row=0, column=1, padx=10, pady=5)
+
+        ttk.Label(form, text="Зав. отделением:").grid(row=1, column=0, padx=10, pady=5, sticky="e")
+        head_e = ttk.Entry(form, width=40)
+        head_e.insert(0, dep[2] or "")
+        head_e.grid(row=1, column=1, padx=10, pady=5)
+
+        ttk.Label(form, text="Больница:").grid(row=2, column=0, padx=10, pady=5, sticky="e")
+        hos_cb = ttk.Combobox(form, width=37)
+        hos_cb.grid(row=2, column=1, padx=10, pady=5)
+
+        hospitals = self.db.get_hospitals()
+        hos_cb['values'] = [f"{h[0]} - {h[1]}" for h in hospitals]
+
+        for h in hospitals:
+            if h[0] == dep[3]:
+                hos_cb.set(f"{h[0]} - {h[1]}")
+                break
+
+        def save():
+            hid = int(hos_cb.get().split(" - ")[0]) if hos_cb.get() else dep[3]
+            self.db.update_department(did, (name_e.get(), head_e.get(), hid))
+            form.destroy()
+            self.load_departments()
+            messagebox.showinfo("Успех", "Данные отделения обновлены")
+
+        ttk.Button(form, text="Сохранить", command=save).grid(row=3, column=0, columnspan=2, pady=20)
+
+    def delete_department(self):
+        did = self.get_selected_department_id()
+        if not did:
+            messagebox.showwarning("Внимание", "Выберите отделение")
+            return
+        if messagebox.askyesno("Подтверждение", "Удалить отделение?"):
+            try:
+                self.db.delete_department(did)
+                self.load_departments()
+                self.load_doctors()
+                messagebox.showinfo("Успех", "Отделение удалено")
+            except:
+                messagebox.showerror("Ошибка", "Нельзя удалить отделение, в котором есть врачи")
+
+    # Методы для отчетов
+    def load_doctors_for_report(self):
+        docs = self.db.get_doctors_list()
+        self.report_doctor_combo['values'] = [f"{d[0]} - {d[1]}" for d in docs]
+
+    def show_statistics(self):
+        s = self.db.get_statistics()
+        self.report_text.delete(1.0, tk.END)
+        self.report_text.insert(tk.END, "=" * 50 + "\n")
+        self.report_text.insert(tk.END, "ОБЩАЯ СТАТИСТИКА\n")
+        self.report_text.insert(tk.END, f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n")
+        self.report_text.insert(tk.END, "=" * 50 + "\n\n")
+        self.report_text.insert(tk.END, f"Всего пациентов: {s[0] or 0}\n")
+        self.report_text.insert(tk.END, f"На лечении: {s[1] or 0}\n")
+        self.report_text.insert(tk.END, f"Выписано: {s[2] or 0}\n")
+
+    def show_doctor_report(self):
+        if not self.report_doctor_combo.get():
+            messagebox.showwarning("Внимание", "Выберите врача")
+            return
+        did = int(self.report_doctor_combo.get().split(" - ")[0])
+        name = self.report_doctor_combo.get().split(" - ")[1]
+        patients = self.db.get_patients_by_doctor(did)
+        self.report_text.delete(1.0, tk.END)
+        self.report_text.insert(tk.END, "=" * 60 + "\n")
+        self.report_text.insert(tk.END, f"ОТЧЕТ: Пациенты врача {name}\n")
+        self.report_text.insert(tk.END, f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n")
+        self.report_text.insert(tk.END, "=" * 60 + "\n\n")
+        for i, p in enumerate(patients, 1):
+            self.report_text.insert(tk.END, f"{i}. {p[0]} - {p[3] if p[3] else 'без диагноза'} ({p[4]})\n")
+        self.report_text.insert(tk.END, f"\nИТОГО: {len(patients)} пациентов\n")
+
+    def show_active_report(self):
+        sort = self.report_sort_combo.get()
+        smap = {"По дате (новые)": "date_desc", "По дате (старые)": "date_asc", "По ФИО": "name"}
+        patients = self.db.get_active_patients_report(smap.get(sort, "date_desc"))
+        self.report_text.delete(1.0, tk.END)
+        self.report_text.insert(tk.END, "=" * 60 + "\n")
+        self.report_text.insert(tk.END, "ОТЧЕТ: Активные пациенты\n")
+        self.report_text.insert(tk.END, f"Сортировка: {sort}\n")
+        self.report_text.insert(tk.END, f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n")
+        self.report_text.insert(tk.END, "=" * 60 + "\n\n")
+        for i, p in enumerate(patients, 1):
+            self.report_text.insert(tk.END, f"{i}. {p[0]} - поступил(а): {p[2]}\n")
+        self.report_text.insert(tk.END, f"\nИТОГО активных пациентов: {len(patients)}\n")
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = HospitalApp(root)
+    root.mainloop()
